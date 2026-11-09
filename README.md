@@ -1,113 +1,91 @@
-# yt-subtitle
+﻿# yt-subtitle
 
-Download a YouTube video's audio temporarily and transcribe it locally into plain
-and timestamped UTF-8 text. Media is removed after completion or failure. The
-multilingual Whisper `small` model runs on an NVIDIA GPU with CUDA and float16
-processing by default. No API key is required.
+Turn a YouTube video into a text transcript on your own computer. The tool downloads the audio, transcribes it using your NVIDIA GPU, and saves plain text and timestamped text files. No paid transcription service or API key is needed.
 
-## Setup
+**Tested on Windows with an NVIDIA GeForce RTX 3090 (24 GB VRAM).** Other operating systems and GPU models have not been verified for this project. These instructions use PowerShell on Windows.
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
-[Node.js](https://nodejs.org/en/download/) version 22 or newer. Node must be
-on `PATH` for yt-dlp's YouTube JavaScript challenges. The downloader explicitly
-enables Node; Deno is not required. Node is installed separately from uv's Python
-dependencies. Open a new terminal after installing it.
+## What you need
+
+- **An NVIDIA GPU and an up-to-date NVIDIA driver.** The GPU must support float16 inference. The currently locked cuDNN runtime requires **Turing or newer** (compute capability 7.5 or higher). For GeForce RTX cards, that means **RTX 20-series or newer**. Older GTX 10-series cards are not supported by this runtime. This is a dependency requirement, not a claim that every compatible card has been tested. See the [NVIDIA cuDNN support matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html) and [NVIDIA driver downloads](https://www.nvidia.com/Download/index.aspx).
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** to install Python and manage the project's dependencies.
+- **[Node.js 22 or newer](https://nodejs.org/en/download/)**, available on your `PATH`. The YouTube downloader uses Node to handle JavaScript challenges.
+- **Internet access** to download videos, dependencies, and the transcription model on its first use.
+
+You do not need to install Python, the CUDA Toolkit, cuDNN, FFmpeg, or Deno separately. uv installs Python 3.12 and the Python dependencies: yt-dlp for downloads, faster-whisper for transcription, Hugging Face Hub for model downloads, PyAV for audio decoding, and NVIDIA CUDA 12/cuDNN 9 runtime libraries on Windows. Your NVIDIA graphics driver must already be installed.
+
+## Set up the project
+
+Download or clone this repository, then open PowerShell in its folder. If you just installed uv or Node, open a new terminal so they are available on `PATH`.
+
+Check that the required tools and your graphics driver are available:
 
 ```powershell
-uv python install 3.12
-uv sync
+uv --version
 node --version
 nvidia-smi
 ```
 
-Python 3.12 is pinned for dependency compatibility. Audio is downloaded without
-conversion and decoded by PyAV (bundled with faster-whisper); this workflow does
-not require a separate FFmpeg executable.
-PyAV is constrained below version 19 because faster-whisper 1.2.1 uses a decoder
-argument removed in PyAV 19. Keep this compatibility constraint until a released
-faster-whisper version supports the newer API.
+`nvidia-smi` should list your NVIDIA GPU. Then bootstrap the project:
 
-The first use downloads the selected
-model from Hugging Face. Subsequent runs reuse its cache. Downloads need network
-access. An NVIDIA GPU and a working NVIDIA driver are required for the default
-device. On Windows, `uv sync` installs CUDA 12 cuBLAS and cuDNN 9 runtime libraries
-in the virtual environment (about 1.3 GB of downloads). The application locates
-their DLLs automatically; no system-wide CUDA Toolkit or PATH edits are needed.
-On Linux, install CUDA 12/cuDNN 9 runtime libraries separately and make them
-available to the dynamic linker.
-Model downloads display Hugging Face progress bars and reuse already cached
-files. Separate messages identify model loading and audio decoding, followed by
-a transcription bar showing processed audio seconds and estimated time remaining.
-Transcription updates arrive in chunks, so the bar can pause during computation.
-Its counter measures seconds of audio, not iteration count.
-Set `HF_HUB_DISABLE_PROGRESS_BARS=1` only if you want to hide model-download bars.
+```powershell
+uv python install 3.12
+uv sync --locked
+```
 
-## Usage
+This creates a `.venv` environment and installs the versions recorded in `uv.lock`. The NVIDIA runtime packages alone download roughly 1.3 GB, so initial setup can take a few minutes. You do not need to activate the environment manually when using `uv run`.
+
+## Transcribe a video
+
+From the project folder, run:
 
 ```powershell
 uv run yt-subtitle "https://www.youtube.com/watch?v=VIDEO_ID"
-uv run yt-subtitle "https://youtu.be/VIDEO_ID" --output-dir results --model base --language en
-uv run yt-subtitle "https://youtu.be/VIDEO_ID" --device cpu
+```
+
+Replace `VIDEO_ID` with the video's ID, or paste its full YouTube URL between the quotes. The tool processes one video at a time; playlist-only links are not supported.
+
+The default `small` Whisper model runs on your GPU using float16. On the first run, the model downloads from Hugging Face with progress bars. Later runs reuse the cached model. Transcription also shows a progress bar and estimated time remaining. The counter measures **seconds of audio processed**, not iterations; it can pause while the next chunk is processed.
+
+When finished, look in `transcripts/` for:
+
+- `VIDEO_ID.txt` — the spoken words, without timestamps.
+- `VIDEO_ID.timestamped.txt` — the same text with timestamps, such as `[00:00:01.250 --> 00:00:04.500] Spoken text`.
+
+The language is detected automatically, and the transcript stays in the original language. Temporary audio is removed after processing; the model cache is kept. Existing transcripts are never overwritten. To repeat a transcription, choose a different output folder:
+
+```powershell
+uv run yt-subtitle "https://youtu.be/VIDEO_ID" --output-dir transcripts-new
+```
+
+## Useful options and troubleshooting
+
+Specify the spoken language and use a smaller model to reduce memory use:
+
+```powershell
+uv run yt-subtitle "https://youtu.be/VIDEO_ID" --language en --model base
+```
+
+Show all command options:
+
+```powershell
 uv run yt-subtitle --help
 ```
 
-The default output directory is `transcripts/`. Successful runs print both paths:
+GPU use is the default and intended workflow. The tool stops if GPU setup fails; it does not silently switch to CPU. An explicit `--device cpu` mode is available for troubleshooting, but it can be impractically slow for long videos.
 
-- `<video-id>.txt`: one trimmed segment per line, without timestamps.
-- `<video-id>.timestamped.txt`: `[00:00:01.250 --> 00:00:04.500] Spoken text`.
+If GPU initialization fails, check `nvidia-smi`, update your graphics driver, and rerun `uv sync --locked`. If GPU memory runs out, close other GPU-heavy applications or try `--model base`. If a download fails, check `node --version` and your internet connection.
 
-The default is `--device cuda` with float16 on GPU 0. GPU initialization is
-checked before downloading audio, and GPU errors never silently fall back to
-CPU. `--device cpu` explicitly selects the slower int8 CPU mode. If VRAM runs
-out, close other GPU applications or select a smaller model with `--model base`.
-The `small` model is retained by default to keep the same quality target.
+## Development
 
-Language is detected automatically unless `--language` is provided. Speech is
-transcribed in its original language, not translated. Both files come from the
-same transcription pass. Existing outputs are never overwritten; use another
-output directory to rerun. No detected speech is reported as an error without
-creating files. Temporary media is cleaned up on normal failure or Ctrl+C;
-force-killing the process can prevent cleanup. Model cache files are retained.
-
-Only one video is processed per invocation, including video links containing a
-playlist parameter. Playlist-only links, authentication, and batch processing
-are outside the initial scope. If downloads fail, check Node
-and network access, then update the downloader:
-
-```powershell
-uv lock --upgrade-package yt-dlp
-uv sync
-```
-
-## Development and verification
-
-To start Codex with permissions for Git writes, uv caches and installations, and
-network downloads, run from your own PowerShell terminal:
-
-```powershell
-.\scripts\codex.ps1
-```
-
-The launcher starts a fresh session in this repository with `danger-full-access`
-and `on-request` approvals. Commands run with your Windows user's filesystem and
-network access, outside the command sandbox. It does not change global Codex
-settings or override managed policies. Additional CLI arguments are forwarded,
-for example `.\scripts\codex.ps1 resume --last`.
-
-Source lives in `src/yt_subtitle/`; offline tests live in `tests/`. Use four-space
-Python indentation and descriptive snake_case names. No formatter or linter is
-configured.
+Source code is in `src/yt_subtitle/`, and automated tests are in `tests/`. Run the tests and build a distributable package with:
 
 ```powershell
 uv run pytest
-uv run yt-subtitle --help
 uv build
 ```
 
-For an end-to-end check, run the command against a short public YouTube video
-with speech. Confirm both files contain matching text, timestamps follow the
-audio, and no downloaded media remains in the output directory. Repeat with the
-same output directory to confirm overwrite protection. Automated tests mock the
-download and model boundaries and require neither network access nor model data.
-A decoder regression test also exercises real PyAV decoding and resampling with
-a generated WAV file to catch dependency incompatibilities.
+The automated tests do not require a GPU or model downloads. Real GPU transcription has also been checked on the RTX 3090 described above.
+
+## License
+
+GNU General Public License v3. See [LICENSE.txt](LICENSE.txt).
